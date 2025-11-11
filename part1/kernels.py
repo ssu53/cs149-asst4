@@ -149,4 +149,49 @@ def matrix_transpose(a_tensor):
 
     # TODO: Your implementation here. The only compute instruction you should use is `nisa.nc_transpose`.
 
+    for i in nl.affine_range(M // tile_dim):
+        for j in nl.affine_range(N // tile_dim):
+            
+            # Allocate the space for a tile
+            a_tile = nl.ndarray([tile_dim, tile_dim], dtype=a_tensor.dtype, buffer=nl.sbuf)
+
+            # Load the tile
+            nisa.dma_copy(src=a_tensor[i * tile_dim : (i+1) * tile_dim, j * tile_dim : (j+1) * tile_dim], dst=a_tile)
+
+            # Transpose the tile
+            a_tile_transposed = nisa.nc_transpose(a_tile)
+
+            # Store the result tile into HBM
+            res_sbif = nl.copy(a_tile_transposed, dtype=a_tile_transposed.dtype)
+            nisa.dma_copy(src=res_sbif, dst=out[j * tile_dim : (j+1) * tile_dim, i * tile_dim : (i+1) * tile_dim])
+
+    return out
+
+
+@nki.compiler.skip_middle_end_transformations
+@nki.jit
+def matrix_transpose_vector(a_tensor):
+    M, N = a_tensor.shape
+    out = nl.ndarray((N, M), dtype=a_tensor.dtype, buffer=nl.hbm)
+    tile_dim = nl.tile_size.pmax  # this should be 128
+
+    assert M % tile_dim == N % tile_dim == 0, "Matrix dimensions not divisible by tile dimension!"
+
+    # TODO: Your implementation here. The only compute instruction you should use is `nisa.nc_transpose`.
+
+    for i in nl.affine_range(M // tile_dim):
+        for j in nl.affine_range(N // tile_dim):
+            
+            # Allocate the space for a tile
+            a_tile = nl.ndarray([tile_dim, tile_dim], dtype=a_tensor.dtype, buffer=nl.sbuf)
+
+            # Load the tile
+            nisa.dma_copy(src=a_tensor[i * tile_dim : (i+1) * tile_dim, j * tile_dim : (j+1) * tile_dim], dst=a_tile)
+
+            # Transpose the tile
+            a_tile_transposed = nisa.nc_transpose(a_tile, engine=nki.isa.constants.engine.vector)
+
+            # Store the result tile into HBM
+            nisa.dma_copy(src=a_tile_transposed, dst=out[j * tile_dim : (j+1) * tile_dim, i * tile_dim : (i+1) * tile_dim])
+
     return out
