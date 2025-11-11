@@ -252,10 +252,12 @@ if __name__ == "__main__":
         },
     ]
     if args.test_maxpool:
-        performance_tests.extend([{
+        performance_tests.extend([
+        {
             "pool_size": 2,
             "dtype": np.float32,
-        }, {
+        }, 
+        {
             "pool_size": 2,
             "dtype": np.float16,
         }])
