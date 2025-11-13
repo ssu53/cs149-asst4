@@ -117,8 +117,7 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
                     a_tile_transposed = nisa.nc_transpose(a_tile)
 
                     # Store the result tile into HBM
-                    res_sbuf = nl.copy(a_tile_transposed, dtype=a_tile_transposed.dtype)
-                    nisa.dma_copy(src=res_sbuf, dst=W_sbuf[:, :, k, m, fh, fw])
+                    W_sbuf[:, :, k, m, fh, fw] = nl.copy(a_tile_transposed, dtype=a_tile_transposed.dtype)
 
     # Process the images in batches
     for b in nl.affine_range(batch_size):
@@ -148,21 +147,24 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
 
         
                     # Iterate over the filters
-                    for fh in nl.affine_range(filter_height):
-                        for fw in nl.affine_range(filter_width):
-                            for k in nl.affine_range(K // TILE_K): # chunking over in_channels
+                    for k in nl.affine_range(K // TILE_K): # chunking over in_channels
+                        for fh in nl.affine_range(filter_height):
+
+                            # Fetch a slice of X_reshaped to be used for inner loop from hbm to sbuf
+                            X_slice = nl.ndarray((TILE_K, TILE_N + filter_width - 1), dtype=X.dtype, buffer=nl.sbuf) # [TILE_K, TILE_N + filter_width - 1]
+                            nisa.dma_copy(
+                                dst=X_slice,
+                                src=X_reshaped[b, k * TILE_K:(k+1) * TILE_K, ((n + fh) * input_width) : ((n + fh) * input_width) + TILE_N + filter_width - 1],
+                            )
+
+                            for fw in nl.affine_range(filter_width):
                                 
                                 # Index into W_sbuf (already on sbuf) for the lhsT tile
                                 lhsT_tile = W_sbuf[:, :, k, m, fh, fw] # [TILE_M, TILE_K]
                                 
-                                # Declare the rhs tile on sbuf
-                                rhs_tile = nl.ndarray((TILE_K, TILE_N), dtype=X.dtype, buffer=nl.sbuf) # [TILE_K, TILE_N]
-                                # Load the tile from X_reshaped onto rhs_tile. It should be shifted to be appropriate for the filter location
+                                # Get the relevant tile from X_slice. It should be shifted to be appropriate for the filter location
                                 # effectively X_shift = X[b, :, fh : fh + out_height, fw : fw + out_width]
-                                nisa.dma_copy(
-                                    dst=rhs_tile,
-                                    src=X_reshaped[b, k * TILE_K:(k+1) * TILE_K, ((n + fh) * input_width) + fw : ((n + fh) * input_width) + fw + TILE_N],
-                                )
+                                rhs_tile = nl.copy(X_slice[:, fw : fw + TILE_N], dtype=X.dtype)
 
                                 # Accumulate partial-sums into PSUM
                                 res_conv_psum[:, pool_idx, :] += nisa.nc_matmul(lhsT_tile[...], rhs_tile[...])
